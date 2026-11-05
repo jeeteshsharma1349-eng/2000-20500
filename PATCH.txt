@@ -1,0 +1,140 @@
+GREENLINE ATELIER — 24% DAILY STOP-LOSS PATCH
+==============================================
+
+A) Add the setting field
+------------------------
+Inside <div class="settings-grid">, add this field (for example, after Stake per trade):
+
+<div class="field">
+  <label for="stopLossRate">Daily stop loss (%)</label>
+  <input id="stopLossRate" type="number" min="0" max="100" step="0.1" value="24">
+  <span class="hint">Measured from each day's opening balance.</span>
+</div>
+
+B) Add a status tile in the selected-day overview
+-------------------------------------------------
+Inside the <div class="daily-detail"> block, add:
+
+<div class="mini">
+  <span>Daily stop-loss floor</span>
+  <strong id="dayStopFloor">—</strong>
+</div>
+
+C) Extend the default config
+----------------------------
+Change:
+let config={start:2000,rate:20,days:30,payout:96,stakeRate:1,startDate:todayISO()};
+
+To:
+let config={start:2000,rate:20,days:30,payout:96,stakeRate:1,stopLossRate:24,startDate:todayISO()};
+
+Also change the same config object inside resetChallenge() to include stopLossRate:24.
+
+D) Update the settings input functions
+--------------------------------------
+In updateConfigInputs(), add:
+$('stopLossRate').value=config.stopLossRate ?? 24;
+
+In readConfig(), add this value to the const declaration:
+stopLossRate=+$('stopLossRate').value;
+
+Then extend the validation condition with:
+|| stopLossRate<0 || stopLossRate>100
+
+Finally, include it in the config assignment:
+config={start,rate,days,payout,stakeRate,stopLossRate,startDate};
+
+E) Replace recalc() with this version
+-------------------------------------
+function recalc(){
+ let balance=config.start, dayRows=[],cumPL=0;
+ for(let d=1;d<=config.days;d++){
+  const opening=balance, goal=planned()[d-1].goal;
+  const stopFloor=opening*(1-(Number(config.stopLossRate??24)/100));
+  const list=getTrades(d);
+  let wins=0,losses=0,pending=0,dayPL=0,stopHit=false,blocked=0;
+
+  list.forEach(t=>{
+   if(t.result==='PENDING'){pending++;return}
+   if(stopHit){blocked++;return}
+   if(t.result==='WIN'){wins++}else{losses++}
+   const pl=t.result==='WIN'?t.stake*config.payout/100:-t.stake;
+   t.pl=pl;
+   balance+=pl;
+   dayPL+=pl;
+   cumPL+=pl;
+   t.balanceAfter=balance;
+   if(balance<=stopFloor) stopHit=true;
+  });
+
+  const pct=goal>opening?Math.max(0,Math.min(100,(balance-opening)/(goal-opening)*100)):(balance>=goal?100:0);
+  let status='PENDING';
+  if(balance>=goal)status='COMPLETE';
+  else if(list.length||d===selectedDay)status='PROGRESS';
+
+  dayRows.push({
+   day:d,opening,goal,actual:balance,dayPL,wins,losses,pending,count:list.length,
+   pct,status,list,stopFloor,stopHit,blocked
+  });
+ }
+ return {dayRows,balance,profit:balance-config.start};
+}
+
+F) Add the stop-loss floor to the selected-day render
+-----------------------------------------------------
+In render(), immediately after:
+const r=rows[selectedDay-1];
+
+Add:
+$('dayStopFloor').textContent=money(r.stopFloor);
+
+Replace the dayMessage text assignment with:
+$('dayMessage').textContent = r.stopHit
+  ? 'DAILY STOP LOSS HIT. Trading is locked for this day. The next challenge day uses its own opening balance and stop-loss floor.'
+  : r.status==='COMPLETE'
+    ? 'Daily target reached. Review your trades and keep records accurate.'
+    : r.actual>r.opening
+      ? 'You are above this day’s opening balance. Compare your actual balance with the daily goal.'
+      : r.count
+        ? 'Trades recorded. Your actual balance is '+money(r.actual)+'.'
+        : 'Ready when you are. Add a trade to start tracking this day.';
+
+G) Add a day-lock helper and enforce it
+---------------------------------------
+Add this function after liveBalance():
+
+function isDayStopLocked(day){
+ const row=recalc().dayRows[day-1];
+ return !!(row && row.stopHit);
+}
+
+At the very beginning of addTrade(), after reading day, add:
+if(isDayStopLocked(day)){
+  toast('Daily stop loss hit. No more trades can be added today.');
+  return;
+}
+
+At the very beginning of resolveTrade(id,result), after finding t, add:
+if(t && isDayStopLocked(t.day)){
+  toast('Daily stop loss hit. This day is locked; pending trades cannot be resolved here.');
+  return;
+}
+
+H) Keep the settings summary clear
+----------------------------------
+Change the callout sentence to include:
+Daily stop loss = each day's opening balance × (1 − stop loss %).
+
+For example, the callout can end with:
+A win adds stake × payout; a loss subtracts the stake. Daily stop-loss floor = that day's opening balance × (1 − stop loss %).
+
+I) Apply button validation
+--------------------------
+No extra event listener is needed: Apply settings already calls readConfig(), saves, and renders.
+The new input is read by readConfig() and displayed by updateConfigInputs().
+
+TEST
+----
+Set starting balance to ₹1,000 and stop loss to 24%.
+The displayed floor for Day 1 should be ₹760. Add settled loss trades until the balance
+reaches ₹760 or lower. The day should show the stop-loss message and reject new trades.
